@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Design Workbooks recorder</title>
+<meta name="dw-recorder-version" content="2026-11-17.2800">
 <!--
   DESIGN WORKBOOKS RECORDER
   Google's Apps Script page is not allowed to use the microphone or record the screen, so the app opens this
@@ -42,12 +43,13 @@ textarea{width:100%;font:inherit;font-size:15px;border:1px solid var(--line);bor
   <p class="meta" id="for"></p>
   <div id="app" class="card" aria-live="polite"></div>
   <p class="meta" style="margin-top:14px">Nothing is saved on this page: the recording goes straight back to your workbook, or to your computer if you press Save the file. <a href="check.html" target="_blank" rel="noopener">Check this device</a></p>
+  <p class="meta" id="recver" style="margin-top:10px;font-size:12px">Recorder version 2026-11-17.2800</p>
 </main>
 <script>
 (function(){
 'use strict';
 const Q=new URLSearchParams(location.search);
-const MODE=['screen','camera','voice'].includes(Q.get('mode'))?Q.get('mode'):'voice';
+const MODE=['screen','camera','voice','voiceover'].includes(Q.get('mode'))?Q.get('mode'):'voice';
 const MAX=Math.max(10,Math.min(3600,+Q.get('max')||180));
 const ID=String(Q.get('id')||'').slice(0,40);
 const APP=String(Q.get('o')||'');
@@ -58,20 +60,20 @@ const APP_OK=/^https:\/\/([a-z0-9-]+\.)*googleusercontent\.com$/.test(APP)||/^ht
 const CAN_SEND=!!(window.opener&&ID&&APP_OK);
 const $=s=>document.querySelector(s), esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=t=>Math.floor(t/60)+':'+String(Math.floor(t%60)).padStart(2,'0');
-const NAMES={screen:'Record your screen',camera:'Record with your camera',voice:'Record your voice'};
+const NAMES={screen:'Record your screen',camera:'Record with your camera',voice:'Record your voice',voiceover:'Add a voice-over to your video'};
 $('#h').textContent=NAMES[MODE]; document.title=NAMES[MODE]+' · Design Workbooks';
 $('#for').textContent=(LABEL?'For: '+LABEL+'. ':'')+'Up to '+fmt(MAX)+'; it stops by itself.';
 const app=$('#app'), show=h=>{ app.innerHTML=h; const b=app.querySelector('.btn.primary,.btn.rec'); if(b) b.focus(); };
 let S=null;   // { streams:[], mr, chunks, t0, paused, pauseAt, timer, ctx, blob, secs, type, tr }
 
-function stopStreams(){ if(!S) return; (S.streams||[]).forEach(st=>st&&st.getTracks().forEach(t=>t.stop())); if(S.ctx) try{ S.ctx.close(); }catch(e){} if(S.meterRaf) cancelAnimationFrame(S.meterRaf); if(S.rec) try{ S.rec.stop(); }catch(e){} }
+function stopStreams(){ if(!S) return; if(S.mctx&&S.mctx.state!=='closed') try{ S.mctx.close().catch(()=>{}); }catch(e){} S.mctx=null; (S.streams||[]).forEach(st=>st&&st.getTracks().forEach(t=>t.stop())); if(S.ctx&&S.ctx.state!=='closed') try{ S.ctx.close().catch(()=>{}); }catch(e){} if(S.meterRaf) cancelAnimationFrame(S.meterRaf); if(S.rec) try{ S.rec.stop(); }catch(e){} }
 function pickType(video){ const list=video?['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4','video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm']:['audio/webm;codecs=opus','audio/mp4','audio/ogg;codecs=opus','audio/webm'];
   return list.find(t=>{ try{ return MediaRecorder.isTypeSupported(t); }catch(e){ return false; } })||''; }
 function meter(stream){ try{ const ctx=new (window.AudioContext||window.webkitAudioContext)(), an=ctx.createAnalyser(); an.fftSize=512; ctx.createMediaStreamSource(stream).connect(an); const d=new Uint8Array(an.fftSize);
   const tick=()=>{ an.getByteTimeDomainData(d); let m=0; for(const v of d) m=Math.max(m,Math.abs(v-128)); const el=$('#lvl'); if(el) el.style.width=Math.min(100,m/1.1)+'%'; S.meterRaf=requestAnimationFrame(tick); }; tick(); return ctx; }catch(e){ return null; } }
 
 /* 1. Start screen: microphone choice (with level), then Start */
-function start(){
+function start(){ if(MODE==='voiceover'){ voPrepare(); return; }
   stopStreams(); S={streams:[],chunks:[]};
   const needMicChoice=MODE!=='voice';
   const sw=MODE!=='voice'&&Q.get('mode')&&Q.get('sw')!=='0'?(()=>{ const u=m=>{ const q=new URLSearchParams(location.search); q.set('mode',m); return '?'+q.toString(); };
@@ -152,7 +154,7 @@ async function begin(){
 /* 3. Watch or listen back, then hand it back */
 function finished(){
   clearInterval(S.timer); document.title=NAMES[MODE]+' · Design Workbooks';
-  S.secs=Math.round(((S.pauseAt||Date.now())-S.t0-S.paused)/1000); stopStreams();
+  S.secs=S.fixedSecs||Math.round(((S.pauseAt||Date.now())-S.t0-S.paused)/1000); stopStreams();
   S.blob=new Blob(S.chunks,{type:S.type});
   if(!S.blob.size){ show(`<div class="msg bad">Nothing was recorded.</div><div class="acts"><button class="btn" id="cancel">Close</button><button class="btn primary" id="again">Record again</button></div>`); $('#cancel').onclick=cancel; $('#again').onclick=start; return; }
   const url=URL.createObjectURL(S.blob);
@@ -163,13 +165,53 @@ function finished(){
     <div class="acts"><button class="btn" id="again">Record again</button><button class="btn" id="save">Save the file</button>${CAN_SEND?'<button class="btn primary" id="use">Use this recording</button>':''}<button class="btn" id="cancel">Cancel</button></div><div id="sendmsg"></div>`);
   $('#again').onclick=start; $('#cancel').onclick=cancel; $('#save').onclick=save;
   const u=$('#use'); if(u) u.onclick=send; }
-function fileName(){ const ext=/mp4/.test(S.type)?(MODE==='voice'?'m4a':'mp4'):/ogg/.test(S.type)?'ogg':'webm'; return (MODE==='screen'?'screen recording':MODE==='camera'?'camera recording':'voice recording')+' '+new Date().toISOString().slice(0,16).replace('T',' ').replace(':','.')+'.'+ext; }
+/* 4. Voice-over: the student's video plays and their voice is recorded over it (picture recorded again as it plays) */
+let VO={src:null,url:''};
+function voInit(){ if(CAN_SEND){ show('<p>Loading your video…</p>'); try{ window.opener.postMessage({type:'dw-vo-ready',v:'2026-11-17.2800',id:ID},APP); }catch(e){} setTimeout(()=>{ if(!VO.src) voPick('Your video did not arrive from the workbook. You can choose the video file instead.'); },20000); } else voPick(''); }
+window.addEventListener('message',e=>{ const d=e.data; if(!d||d.type!=='dw-vo-src'||d.id!==ID||e.origin!==APP||!(d.blob instanceof Blob)) return; if(VO.src) return; VO.src=d.blob; voPrepare(); });
+function voPick(msg){ show(`${msg?'<div class="msg warn">'+esc(msg)+'</div>':''}<p><b>Choose a video to talk over.</b></p><input type="file" id="vof" accept="video/*"><div class="acts"><button class="btn" id="cancel">Cancel</button></div>`); $('#cancel').onclick=cancel; $('#vof').onchange=e=>{ const f=e.target.files[0]; if(f){ VO.src=f; voPrepare(); } }; }
+function voPrepare(){ stopStreams(); S={streams:[],chunks:[]}; if(VO.url) URL.revokeObjectURL(VO.url); VO.url=URL.createObjectURL(VO.src);
+  show(`<video id="vov" playsinline src="${VO.url}" style="width:100%;max-height:52vh;background:#000;border-radius:8px"></video>
+    <div class="vo-bar"><div class="meter"><i id="vop"></i></div><span class="meta" id="vot">0:00</span></div>
+    <label class="chk"><input type="checkbox" id="vokeep" checked> Keep the video’s own sound (quieter, under your voice)</label>
+    <p class="meta">Press <b>Record voice-over</b>: the video plays and your voice is recorded over it. You can pause, or stop early. Headphones help if you want to hear the video’s sound while you talk.</p>
+    <p class="meta">Microphone level (speak to test):</p><div class="meter"><i id="lvl"></i></div>
+    <div class="acts" id="voacts"><button class="btn" id="cancel">Cancel</button><button class="btn rec" id="vogo">● Record voice-over</button></div><div id="voch"></div>`);
+  $('#cancel').onclick=cancel; $('#vogo').onclick=voRecord; const v=$('#vov'); v.onloadedmetadata=()=>{ $('#vot').textContent='0:00 of '+fmt(v.duration||0); };
+  navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}}).then(st=>{ S.mic=st; S.streams.push(st); S.mctx=meter(st); }).catch(()=>{}); }
+async function voRecord(){ const v=$('#vov'), keep=$('#vokeep').checked;
+  try{ if(!S.mic){ S.mic=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}}); S.streams.push(S.mic); S.mctx=meter(S.mic); } }
+  catch(e){ show(`<div class="msg bad">The microphone ${e&&e.name==='NotAllowedError'?'was not allowed. Allow it in the address bar, then try again.':'could not be used.'}</div><div class="acts"><button class="btn primary" id="again">Try again</button></div>`); $('#again').onclick=voPrepare; return; }
+  const ctx=new (window.AudioContext||window.webkitAudioContext)(); S.ctx=ctx; const dest=ctx.createMediaStreamDestination();
+  const mg=ctx.createGain(); ctx.createMediaStreamSource(S.mic).connect(mg); mg.connect(dest); S.mg=mg;
+  try{ const vs=ctx.createMediaElementSource(v), vg=ctx.createGain(), hear=ctx.createGain(); vg.gain.value=keep?0.35:0; hear.gain.value=keep?0.6:0; vs.connect(vg); vg.connect(dest); vs.connect(hear); hear.connect(ctx.destination); }catch(e){}
+  let vt=null; try{ const cs=v.captureStream?v.captureStream():v.mozCaptureStream?v.mozCaptureStream():null; vt=cs&&cs.getVideoTracks()[0]; }catch(e){}
+  if(!vt){ const c=document.createElement('canvas'); c.width=v.videoWidth||1280; c.height=v.videoHeight||720; const g=c.getContext('2d'); const draw=()=>{ if(!S||S.done) return; try{ g.drawImage(v,0,0,c.width,c.height); }catch(e){} S.raf=requestAnimationFrame(draw); }; draw(); const cs=c.captureStream(30); S.streams.push(cs); vt=cs.getVideoTracks()[0]; }
+  const out=new MediaStream([vt].concat(dest.stream.getAudioTracks())); const type=pickType(true);
+  let mr; try{ mr=new MediaRecorder(out,type?{mimeType:type,videoBitsPerSecond:2500000}:undefined); }catch(e){ mr=new MediaRecorder(out); }
+  S.type=mr.mimeType||type||'video/webm'; S.mr=mr; S.chunks=[]; S.t0=Date.now(); S.paused=0;
+  mr.ondataavailable=e=>{ if(e.data&&e.data.size) S.chunks.push(e.data); };
+  mr.onstop=()=>{ S.done=true; S.fixedSecs=Math.max(1,Math.round(S.upTo||v.currentTime||0)); if(S.raf) cancelAnimationFrame(S.raf); clearInterval(S.vtick); finished(); };
+  const prog=()=>{ S.upTo=v.currentTime; const d=v.duration||1; $('#vop').style.width=Math.min(100,100*v.currentTime/d)+'%'; $('#vot').textContent=fmt(v.currentTime)+' of '+fmt(d)+(S.rest?' · adding the rest, '+fmt(d-v.currentTime)+' left':''); };
+  S.vtick=setInterval(prog,250); v.onended=()=>{ prog(); if(mr.state!=='inactive') mr.stop(); };
+  v.currentTime=0; mr.start(1000); try{ await v.play(); }catch(e){}
+  voCtl('rec'); }
+function voCtl(st){ const a=$('#voacts'), v=$('#vov'), mr=S.mr; $('#voch').innerHTML='';
+  if(st==='rec'){ a.innerHTML='<button class="btn" id="vopause">❚❚ Pause</button><button class="btn rec" id="vostop">■ Stop</button>';
+    $('#vopause').onclick=()=>{ if(v.paused){ v.play(); if(mr.state==='paused') mr.resume(); $('#vopause').textContent='❚❚ Pause'; } else { v.pause(); if(mr.state==='recording') mr.pause(); $('#vopause').textContent='▶ Carry on'; } };
+    $('#vostop').onclick=()=>{ v.pause(); if(mr.state==='recording') mr.pause(); voCtl('stopped'); }; }
+  else if(st==='stopped'){ a.innerHTML='';
+    $('#voch').innerHTML=`<div class="msg"><b>Stopped at ${fmt(v.currentTime)} of ${fmt(v.duration||0)}.</b> What now?</div><div class="acts" style="flex-wrap:wrap;justify-content:flex-start"><button class="btn primary" id="vo-use">Use what I have</button><button class="btn" id="vo-on">Keep going</button><button class="btn" id="vo-rest">Finish without talking</button></div><p class="meta">Use what I have: the video ends here. Finish without talking: the rest plays through with the video’s own sound (about ${fmt(Math.max(0,(v.duration||0)-v.currentTime))}).</p>`;
+    $('#vo-use').onclick=()=>{ S.upTo=v.currentTime; if(mr.state!=='inactive') mr.stop(); };
+    $('#vo-on').onclick=()=>{ v.play(); if(mr.state==='paused') mr.resume(); voCtl('rec'); };
+    $('#vo-rest').onclick=()=>{ if(S.mg) S.mg.gain.value=0; S.rest=true; v.play(); if(mr.state==='paused') mr.resume(); a.innerHTML='<span class="meta">Adding the rest of the video…</span>'; $('#voch').innerHTML=''; }; } }
+function fileName(){ const ext=/mp4/.test(S.type)?(MODE==='voice'?'m4a':'mp4'):/ogg/.test(S.type)?'ogg':'webm'; return (MODE==='screen'?'screen recording':MODE==='camera'?'camera recording':MODE==='voiceover'?'video with voice-over':'voice recording')+' '+new Date().toISOString().slice(0,16).replace('T',' ').replace(':','.')+'.'+ext; }
 function save(){ const a=document.createElement('a'); a.href=URL.createObjectURL(S.blob); a.download=fileName(); document.body.appendChild(a); a.click(); a.remove();
   $('#sendmsg').innerHTML='<div class="msg ok">Saved to your computer (Downloads). In your workbook, choose Upload and pick this file.</div>'; }
 let ACKED=false;
 function send(){
   const tr=$('#tre')?$('#tre').value.trim():S.tr;
-  try{ window.opener.postMessage({type:'dw-rec',id:ID,mode:MODE,blob:S.blob,mime:S.type,secs:S.secs,name:fileName(),tr},APP); }
+  try{ window.opener.postMessage({type:'dw-rec',v:'2026-11-17.2800',id:ID,mode:MODE,blob:S.blob,mime:S.type,secs:S.secs,name:fileName(),tr},APP); }
   catch(e){ $('#sendmsg').innerHTML='<div class="msg bad">It could not be sent to your workbook ('+esc(e.message)+'). Press Save the file, then upload it in the workbook.</div>'; return; }
   $('#use').disabled=true; $('#sendmsg').innerHTML='<div class="msg">Sending to your workbook…</div>';
   setTimeout(()=>{ if(ACKED) return; $('#use').disabled=false; $('#sendmsg').innerHTML='<div class="msg warn">Your workbook did not answer. Is its tab still open? Try again, or press Save the file and upload it in the workbook.</div>'; },5000); }
@@ -180,11 +222,12 @@ function cancel(){ stopStreams(); clearInterval(S&&S.timer); try{ if(CAN_SEND) w
 window.addEventListener('beforeunload',stopStreams);
 
 if(!navigator.mediaDevices||!window.MediaRecorder){ show('<div class="msg bad">This browser cannot record. Use Chrome, Edge or Safari (up to date).</div>'); return; }
+if(MODE==='voiceover'){ $('#for').textContent='Talk over your video. It comes back to your workbook when you press Use this recording.'; voInit(); return; }
 if(!Q.get('mode')){   // opened on its own (not from the app): choose what to record, to try it out
   $('#h').textContent='Design Workbooks recorder'; document.title='Recorder · Design Workbooks';
   $('#for').textContent='Opened on its own, so this is a try-out: you can watch or save what you record. In the app, recording opens this page for you.';
   const u=m=>'?mode='+m+'&max='+(m==='voice'?180:120);
-  show(`<p><b>What do you want to try?</b></p><div class="acts" style="justify-content:flex-start;flex-wrap:wrap"><a class="btn primary" href="${u('voice')}">🎙 Record my voice</a><a class="btn primary" href="${u('screen')}">🖥 Record my screen</a><a class="btn primary" href="${u('camera')}">📷 Record with my camera</a></div><p class="meta"><a href="check.html">Check what this device can record</a></p>`);
+  show(`<p><b>What do you want to try?</b></p><div class="acts" style="justify-content:flex-start;flex-wrap:wrap"><a class="btn primary" href="${u('voice')}">🎙 Record my voice</a><a class="btn primary" href="${u('screen')}">🖥 Record my screen</a><a class="btn primary" href="${u('camera')}">📷 Record with my camera</a><a class="btn primary" href="?mode=voiceover">🎙 Add a voice-over to a video</a></div><p class="meta"><a href="check.html">Check what this device can record</a></p>`);
   return; }
 start();
 })();

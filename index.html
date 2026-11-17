@@ -21,6 +21,7 @@ main{max-width:720px;margin:0 auto;padding:18px 16px 40px}
 h1{font-size:20px;margin:0 0 4px} .meta{color:var(--muted);font-size:14px} .card{background:var(--sheet);border:1px solid var(--line);border-radius:14px;padding:16px;margin-top:14px}
 .btn{font:inherit;font-size:15px;border:1px solid var(--line);background:var(--sheet);color:var(--ink);border-radius:9px;padding:9px 16px;cursor:pointer}
 a.btn{text-decoration:none;display:inline-block}
+.sw{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 12px}.sw span{color:var(--muted);font-size:14px}.sw a{padding:7px 14px;border:1px solid var(--line);border-radius:999px;text-decoration:none;color:var(--ink);background:var(--sheet)}.sw a[aria-current=true]{background:var(--ink);color:var(--sheet);border-color:var(--ink);font-weight:600}
 .pick{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:4px 0 10px}.pick div{border:1px solid var(--line);border-radius:10px;padding:8px 10px;display:grid;gap:2px;background:var(--sheet)}.pick span{font-size:13px;color:var(--muted)}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff} .btn.rec{background:var(--bad);border-color:var(--bad);color:#fff} .btn:disabled{opacity:.5;cursor:default}
 .acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px} label.chk{display:flex;gap:8px;align-items:center;margin-top:10px}
@@ -73,7 +74,9 @@ function meter(stream){ try{ const ctx=new (window.AudioContext||window.webkitAu
 function start(){
   stopStreams(); S={streams:[],chunks:[]};
   const needMicChoice=MODE!=='voice';
-  show(`${MODE==='screen'?`<p><b>Step 1.</b> Press <b>Choose what to record</b> below.</p>
+  const sw=MODE!=='voice'&&Q.get('mode')&&Q.get('sw')!=='0'?(()=>{ const u=m=>{ const q=new URLSearchParams(location.search); q.set('mode',m); return '?'+q.toString(); };
+    return `<div class="sw" role="group" aria-label="What to record"><span>Record:</span><a href="${u('camera')}" aria-current="${MODE==='camera'}">📷 My camera</a><a href="${u('screen')}" aria-current="${MODE==='screen'}">🖥 My screen</a></div>`; })():'';
+  show(`${sw}${MODE==='screen'?`<p><b>Step 1.</b> Press <b>Choose what to record</b> below.</p>
     <p><b>Step 2.</b> Your browser opens a box asking what to share. Pick one:</p>
     <div class="pick"><div><b>🖥 Entire screen</b><span>everything you see</span></div><div><b>🪟 Window</b><span>one app window</span></div><div><b>🗂 Chrome tab</b><span>one tab, e.g. your workbook (tick “Share tab audio” for its sound)</span></div></div>
     <p><b>Step 3.</b> Press <b>Share</b>. Recording starts after a 3-second countdown.</p>

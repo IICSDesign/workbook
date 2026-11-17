@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Check this device · Design Workbooks</title>
+<!-- DESIGN WORKBOOKS: CHECK THIS DEVICE. Can this browser record the screen, use the camera and the microphone,
+     and make a video file? Nothing is recorded or sent; the result can be copied into "Report a problem". -->
+<style>
+:root{--ink:#15212B;--muted:#56656F;--line:#D5DDE3;--sheet:#fff;--bg:#EEF2F5;--accent:#2459A8;--ok:#23744F;--bad:#AE2537;--mark:#7A4B00}
+*{box-sizing:border-box} body{margin:0;font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:var(--ink);background:var(--bg)}
+main{max-width:720px;margin:0 auto;padding:18px 16px 40px} h1{font-size:20px;margin:0 0 4px} .meta{color:var(--muted);font-size:14px}
+.card{background:var(--sheet);border:1px solid var(--line);border-radius:14px;padding:6px 16px;margin-top:14px}
+.row{display:grid;grid-template-columns:28px 1fr auto;gap:10px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)} .row:last-child{border-bottom:0}
+.ic{font-size:20px;text-align:center} .ok .ic{color:var(--ok)} .bad .ic{color:var(--bad)} .warn .ic{color:var(--mark)}
+.btn{font:inherit;font-size:14px;border:1px solid var(--line);background:var(--sheet);border-radius:8px;padding:6px 12px;cursor:pointer} .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+pre{white-space:pre-wrap;background:var(--sheet);border:1px solid var(--line);border-radius:10px;padding:10px;font-size:13px}
+:focus-visible{outline:2.5px solid var(--accent);outline-offset:2px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Check this device</h1>
+  <p class="meta">For Design Workbooks recordings. Press each Test button: the browser may ask to allow the camera, microphone or screen. Nothing is recorded or sent.</p>
+  <div class="card" id="rows"></div>
+  <p><button class="btn primary" id="copy">Copy the result</button> <span class="meta">then paste it into ⚑ Report a problem in your workbook, or send it to your teacher.</span></p>
+  <pre id="out"></pre>
+</main>
+<script>
+(function(){
+'use strict';
+const $=s=>document.querySelector(s), esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const R={};   // name -> {s:'ok'|'bad'|'warn'|'', t:text}
+const ROWS=[
+  ['browser','Browser'],
+  ['rec','Can make recordings'],
+  ['video','Video format'],
+  ['mic','Microphone','test'],
+  ['cam','Camera','test'],
+  ['screen','Screen recording','test'],
+  ['words','Words written down while speaking'],
+];
+function draw(){ $('#rows').innerHTML=ROWS.map(([k,l,t])=>{ const r=R[k]||{s:'',t:t?'Not tested yet':''};
+  return `<div class="row ${r.s}"><span class="ic" aria-hidden="true">${r.s==='ok'?'✓':r.s==='bad'?'✗':r.s==='warn'?'!':'…'}</span><div><b>${esc(l)}</b><div class="meta">${esc(r.t)}</div></div>${t?`<button class="btn" data-t="${k}">Test</button>`:'<span></span>'}</div>`; }).join('');
+  $('#out').textContent=['Design Workbooks device check '+new Date().toLocaleString(),navigator.userAgent].concat(ROWS.map(([k,l])=>l+': '+((R[k]&&{ok:'yes',bad:'NO',warn:'partly'}[R[k].s])||'not tested')+(R[k]&&R[k].t?' ('+R[k].t+')':''))).join('\n'); }
+const ua=navigator.userAgent, cros=/CrOS/.test(ua);
+const br=/Edg\//.test(ua)?'Edge':/Chrome\//.test(ua)?'Chrome':/Firefox\//.test(ua)?'Firefox':/Safari\//.test(ua)?'Safari':'Another browser';
+R.browser={s:/Chrome|Edge/.test(br)?'ok':'warn',t:br+(cros?' on a Chromebook':/Mac OS X/.test(ua)?' on a Mac':/Windows/.test(ua)?' on Windows':/Android/.test(ua)?' on Android':/iPhone|iPad/.test(ua)?' on iPhone/iPad':'')+(/Chrome|Edge/.test(br)?'':': Chrome or Edge works best')};
+R.rec=window.MediaRecorder&&navigator.mediaDevices?{s:'ok',t:'Yes'}:{s:'bad',t:'No: this browser cannot record. Update it, or use Chrome or Edge.'};
+const fmts=['video/mp4','video/webm;codecs=vp9','video/webm'].filter(t=>{ try{ return window.MediaRecorder&&MediaRecorder.isTypeSupported(t); }catch(e){ return false; } });
+R.video=fmts.length?{s:'ok',t:fmts[0].split(';')[0]+(fmts[0].includes('mp4')?' (plays everywhere)':' (plays in Chrome, Edge and Firefox)')}:{s:'bad',t:'None'};
+R.words=(window.SpeechRecognition||window.webkitSpeechRecognition)?{s:'ok',t:'Yes'}:{s:'warn',t:'Not in this browser: voice recordings still work, just without the words written down'};
+const why=e=>e&&e.name==='NotAllowedError'?(/policy|disallowed/i.test(e.message||'')?'blocked by a setting on this device or school account':'not allowed: click the icon in the address bar to allow it, then test again'):e&&e.name==='NotFoundError'?'none found on this device':(e&&e.message||String(e));
+async function test(k){
+  try{
+    if(k==='mic'){ const st=await navigator.mediaDevices.getUserMedia({audio:true}); const n=st.getAudioTracks()[0].label; st.getTracks().forEach(t=>t.stop()); R.mic={s:'ok',t:'Works'+(n?': '+n:'')}; }
+    if(k==='cam'){ const st=await navigator.mediaDevices.getUserMedia({video:true}); const n=st.getVideoTracks()[0].label; st.getTracks().forEach(t=>t.stop()); R.cam={s:'ok',t:'Works'+(n?': '+n:'')}; }
+    if(k==='screen'){ if(!navigator.mediaDevices.getDisplayMedia){ R.screen={s:'bad',t:'This browser cannot record the screen (phones and tablets cannot): use the device’s own screen recorder and upload the video'}; }
+      else { const st=await navigator.mediaDevices.getDisplayMedia({video:true}); st.getTracks().forEach(t=>t.stop()); R.screen={s:'ok',t:'Works'}; } }
+  }catch(e){ R[k]={s:'bad',t:why(e)+(k==='screen'&&cros&&/blocked/.test(why(e))?' (on a school Chromebook your Google admin can allow screen capture)':'')}; }
+  draw(); }
+document.addEventListener('click',e=>{ const b=e.target.closest('[data-t]'); if(b) test(b.dataset.t); });
+$('#copy').onclick=()=>{ const t=$('#out').textContent; (navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).then(()=>{ $('#copy').textContent='Copied ✓'; }).catch(()=>{ const r=document.createRange(); r.selectNodeContents($('#out')); const s=getSelection(); s.removeAllRanges(); s.addRange(r); }); };
+draw();
+})();
+</script>
+</body>
+</html>

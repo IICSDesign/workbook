@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design Workbooks recorder</title>
+<!--
+  DESIGN WORKBOOKS RECORDER
+  Google's Apps Script page is not allowed to use the microphone or record the screen, so the app opens this
+  page in its own tab. It records the screen, the camera or the voice, lets the student watch or listen back,
+  and hands the recording straight back to the app tab that opened it (window.opener.postMessage). Nothing is
+  uploaded or stored here: uploads still go through the app. If the hand-back is not possible, "Save the file"
+  downloads it, and the student uploads it in the app.
+  Address parameters (set by the app): mode=screen|camera|voice, max=seconds, id=request id, o=the app's origin,
+  mic=1|0, label=what it is for, lang=transcript language (voice).
+-->
+<style>
+:root{--ink:#15212B;--muted:#56656F;--line:#D5DDE3;--sheet:#fff;--bg:#EEF2F5;--accent:#2459A8;--ok:#23744F;--bad:#AE2537;--mark:#C77700}
+*{box-sizing:border-box} body{margin:0;font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:var(--ink);background:var(--bg)}
+main{max-width:720px;margin:0 auto;padding:18px 16px 40px}
+h1{font-size:20px;margin:0 0 4px} .meta{color:var(--muted);font-size:14px} .card{background:var(--sheet);border:1px solid var(--line);border-radius:14px;padding:16px;margin-top:14px}
+.btn{font:inherit;font-size:15px;border:1px solid var(--line);background:var(--sheet);color:var(--ink);border-radius:9px;padding:9px 16px;cursor:pointer}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff} .btn.rec{background:var(--bad);border-color:var(--bad);color:#fff} .btn:disabled{opacity:.5;cursor:default}
+.acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px} label.chk{display:flex;gap:8px;align-items:center;margin-top:10px}
+.meter{height:10px;border-radius:6px;background:var(--line);overflow:hidden;margin-top:8px} .meter i{display:block;height:100%;width:0;background:var(--ok);transition:width .08s}
+.big{font-size:30px;font-variant-numeric:tabular-nums;font-weight:650} .dot{display:inline-block;width:12px;height:12px;border-radius:50%;background:var(--bad);margin-right:8px;animation:bl 1s infinite} @keyframes bl{50%{opacity:.3}}
+.bar{height:6px;border-radius:4px;background:var(--line);overflow:hidden;margin-top:8px} .bar i{display:block;height:100%;background:var(--accent);width:0}
+video,audio{width:100%;margin-top:10px;border-radius:10px;background:#000} audio{background:none}
+.msg{padding:10px 12px;border-radius:9px;margin-top:12px} .msg.ok{background:#DEF1E7;color:var(--ok)} .msg.bad{background:#FBE3E6;color:var(--bad)} .msg.warn{background:#FBEAD0;color:#7A4B00}
+.cd{position:fixed;inset:0;display:grid;place-items:center;background:rgba(21,33,43,.55);color:#fff;font-size:96px;font-weight:700;z-index:9}
+.tr{background:#F6F9FB;border:1px solid var(--line);border-radius:9px;padding:8px 10px;min-height:2.5em;margin-top:10px;font-size:15px}
+textarea{width:100%;font:inherit;font-size:15px;border:1px solid var(--line);border-radius:9px;padding:8px;margin-top:6px}
+:focus-visible{outline:2.5px solid var(--accent);outline-offset:2px}
+</style>
+</head>
+<body>
+<main>
+  <h1 id="h">Recorder</h1>
+  <p class="meta" id="for"></p>
+  <div id="app" class="card" aria-live="polite"></div>
+  <p class="meta" style="margin-top:14px">Nothing is saved on this page: the recording goes straight back to your workbook, or to your computer if you press Save the file. <a href="check.html" target="_blank" rel="noopener">Check this device</a></p>
+</main>
+<script>
+(function(){
+'use strict';
+const Q=new URLSearchParams(location.search);
+const MODE=['screen','camera','voice'].includes(Q.get('mode'))?Q.get('mode'):'voice';
+const MAX=Math.max(10,Math.min(3600,+Q.get('max')||180));
+const ID=String(Q.get('id')||'').slice(0,40);
+const APP=String(Q.get('o')||'');
+const LABEL=String(Q.get('label')||'').slice(0,200);
+const LANG=String(Q.get('lang')||'').slice(0,12);
+// the app runs on Google's *.googleusercontent.com pages (localhost only for testing)
+const APP_OK=/^https:\/\/([a-z0-9-]+\.)*googleusercontent\.com$/.test(APP)||/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(APP);
+const CAN_SEND=!!(window.opener&&ID&&APP_OK);
+const $=s=>document.querySelector(s), esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt=t=>Math.floor(t/60)+':'+String(Math.floor(t%60)).padStart(2,'0');
+const NAMES={screen:'Record your screen',camera:'Record with your camera',voice:'Record your voice'};
+$('#h').textContent=NAMES[MODE]; document.title=NAMES[MODE]+' · Design Workbooks';
+$('#for').textContent=(LABEL?'For: '+LABEL+'. ':'')+'Up to '+fmt(MAX)+'; it stops by itself.';
+const app=$('#app'), show=h=>{ app.innerHTML=h; const b=app.querySelector('.btn.primary,.btn.rec'); if(b) b.focus(); };
+let S=null;   // { streams:[], mr, chunks, t0, paused, pauseAt, timer, ctx, blob, secs, type, tr }
+
+function stopStreams(){ if(!S) return; (S.streams||[]).forEach(st=>st&&st.getTracks().forEach(t=>t.stop())); if(S.ctx) try{ S.ctx.close(); }catch(e){} if(S.meterRaf) cancelAnimationFrame(S.meterRaf); if(S.rec) try{ S.rec.stop(); }catch(e){} }
+function pickType(video){ const list=video?['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4','video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm']:['audio/webm;codecs=opus','audio/mp4','audio/ogg;codecs=opus','audio/webm'];
+  return list.find(t=>{ try{ return MediaRecorder.isTypeSupported(t); }catch(e){ return false; } })||''; }
+function meter(stream){ try{ const ctx=new (window.AudioContext||window.webkitAudioContext)(), an=ctx.createAnalyser(); an.fftSize=512; ctx.createMediaStreamSource(stream).connect(an); const d=new Uint8Array(an.fftSize);
+  const tick=()=>{ an.getByteTimeDomainData(d); let m=0; for(const v of d) m=Math.max(m,Math.abs(v-128)); const el=$('#lvl'); if(el) el.style.width=Math.min(100,m/1.1)+'%'; S.meterRaf=requestAnimationFrame(tick); }; tick(); return ctx; }catch(e){ return null; } }
+
+/* 1. Start screen: microphone choice (with level), then Start */
+function start(){
+  stopStreams(); S={streams:[],chunks:[]};
+  const needMicChoice=MODE!=='voice';
+  show(`<p><b>${MODE==='screen'?'You will choose a tab, a window or your whole screen.':MODE==='camera'?'Your camera and microphone will be used.':'Your microphone will be used.'}</b></p>
+    ${MODE==='screen'?'<p class="meta">Tip: to record your workbook, choose its tab. To stop, come back to this tab and press Stop, or use the browser’s “Stop sharing”.</p>':''}
+    ${needMicChoice?`<label class="chk"><input type="checkbox" id="mic" ${Q.get('mic')==='0'?'':'checked'}> Use my microphone</label>`:''}
+    <div id="micbox"><p class="meta" style="margin-top:10px">Microphone level (speak to test):</p><div class="meter"><i id="lvl"></i></div><p class="meta" id="micmsg"></p></div>
+    ${MODE==='camera'?'<video id="pv" autoplay muted playsinline></video>':''}
+    <div class="acts"><button class="btn" id="cancel">Cancel</button><button class="btn rec" id="go">${MODE==='screen'?'Choose what to record':'Start recording'}</button></div>`);
+  $('#cancel').onclick=cancel;
+  const mic=$('#mic'); if(mic) mic.onchange=prepare;
+  $('#go').onclick=begin;
+  prepare(); }
+async function prepare(){ // camera / microphone preview before recording (the browser asks the first time)
+  stopStreams(); S={streams:[],chunks:[]};
+  const wantMic=MODE==='voice'||($('#mic')&&$('#mic').checked);
+  $('#micbox').hidden=!wantMic;
+  try{
+    if(MODE==='camera'){ const st=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720}},audio:wantMic}); S.cam=st; S.streams.push(st); const pv=$('#pv'); if(pv) pv.srcObject=st; if(wantMic) S.ctx=meter(st); }
+    else if(wantMic){ const st=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}}); S.mic=st; S.streams.push(st); S.ctx=meter(st); }
+    const m=$('#micmsg'); if(m) m.textContent='';
+  }catch(e){ const m=$('#micmsg');
+    const why=e&&e.name==='NotAllowedError'?'was not allowed. Click the camera or microphone icon in the address bar to allow it, then press Start again.':e&&e.name==='NotFoundError'?'was not found on this device.':'could not be used ('+(e&&e.message||e)+').';
+    if(MODE==='screen'){ if(m) m.textContent='The microphone '+why+' You can still record without your voice.'; }
+    else show(`<div class="msg bad">The ${MODE==='camera'?'camera':'microphone'} ${esc(why)}</div><div class="acts"><button class="btn" id="cancel">Cancel</button><button class="btn primary" id="again">Try again</button></div>`), $('#cancel').onclick=cancel, $('#again').onclick=start; }
+}
+async function countdown(){ const c=document.createElement('div'); c.className='cd'; document.body.appendChild(c); for(const n of [3,2,1]){ c.textContent=n; await new Promise(z=>setTimeout(z,800)); } c.remove(); }
+
+/* 2. Recording */
+async function begin(){
+  const wantMic=MODE==='voice'||($('#mic')&&$('#mic').checked);
+  let tracks=[], video=MODE!=='voice';
+  try{
+    if(MODE==='screen'){
+      if(!navigator.mediaDevices||!navigator.mediaDevices.getDisplayMedia) throw Object.assign(new Error('This browser cannot record the screen. Use Chrome or Edge on a laptop or Chromebook.'),{name:'NoScreen'});
+      const disp=await navigator.mediaDevices.getDisplayMedia({video:{cursor:'always',frameRate:{ideal:24,max:30},width:{max:1920},height:{max:1080}},audio:true,selfBrowserSurface:'exclude',surfaceSwitching:'include'});
+      S.disp=disp; S.streams.push(disp);
+      disp.getVideoTracks()[0].addEventListener('ended',()=>{ if(S&&S.mr&&S.mr.state!=='inactive') S.mr.stop(); });
+      const auds=[...disp.getAudioTracks(),...(wantMic&&S.mic?S.mic.getAudioTracks():[])];
+      tracks=[...disp.getVideoTracks()];
+      if(auds.length>1){ const ctx=new AudioContext(), dst=ctx.createMediaStreamDestination(); [new MediaStream(disp.getAudioTracks()),S.mic].forEach(st=>{ if(st&&st.getAudioTracks().length) ctx.createMediaStreamSource(st).connect(dst); }); S.mix=ctx; tracks=tracks.concat(dst.stream.getAudioTracks()); }
+      else tracks=tracks.concat(auds);
+      await countdown();
+    } else if(MODE==='camera'){ if(!S.cam) await prepare(); if(!S.cam) return; tracks=S.cam.getTracks(); }
+    else { if(!S.mic) await prepare(); if(!S.mic) return; tracks=S.mic.getAudioTracks(); }
+  }catch(e){
+    if(e&&e.name==='NotAllowedError'&&!/policy/i.test(e.message||'')){ show(`<div class="msg warn">Recording was not started: nothing was chosen to share.</div><div class="acts"><button class="btn" id="cancel">Cancel</button><button class="btn primary" id="again">Try again</button></div>`); }
+    else show(`<div class="msg bad">${esc(e&&e.message||'Recording is not possible here.')}</div><p class="meta">On a school Chromebook, screen recording may be switched off by the school. You can also record with the device’s own screen recorder and upload the video in the workbook.</p><div class="acts"><button class="btn" id="cancel">Close</button><button class="btn primary" id="again">Try again</button></div>`);
+    $('#cancel').onclick=cancel; $('#again').onclick=start; return; }
+  const type=pickType(video);
+  let mr; try{ mr=new MediaRecorder(new MediaStream(tracks),type?Object.assign({mimeType:type},video?{videoBitsPerSecond:1800000}:{}):{}); }
+  catch(e){ show(`<div class="msg bad">This browser cannot make a recording (${esc(e.message)}).</div><div class="acts"><button class="btn" id="cancel">Close</button></div>`); $('#cancel').onclick=cancel; return; }
+  S.mr=mr; S.type=(mr.mimeType||type||(video?'video/webm':'audio/webm')).split(';')[0]; S.paused=0; S.pauseAt=0;
+  mr.ondataavailable=e=>{ if(e.data&&e.data.size) S.chunks.push(e.data); };
+  mr.onstop=finished;
+  // live transcript for voice (Chrome / Edge), returned with the recording; the student can correct it in the app
+  S.tr=''; if(MODE==='voice'){ const SR=window.SpeechRecognition||window.webkitSpeechRecognition; if(SR){ try{ const r=new SR(); r.continuous=true; r.interimResults=true; r.lang=LANG||navigator.language||'en-GB'; let fin='';
+    r.onresult=ev=>{ let inter=''; for(let i=ev.resultIndex;i<ev.results.length;i++){ const t=ev.results[i][0].transcript; if(ev.results[i].isFinal) fin+=t+' '; else inter+=t; } S.tr=fin.trim(); const el=$('#trl'); if(el) el.innerHTML=esc(fin)+(inter?'<span class="meta">'+esc(inter)+'</span>':''); };
+    r.onend=()=>{ if(S&&S.mr&&S.mr.state==='recording') try{ r.start(); }catch(e){} }; r.start(); S.rec=r; }catch(e){} } }
+  mr.start(1000); S.t0=Date.now();
+  show(`<p class="big"><span class="dot" aria-hidden="true"></span><span id="t">0:00</span> <span class="meta">of ${fmt(MAX)}</span></p><div class="bar"><i id="b"></i></div>
+    ${MODE==='camera'?'<video id="pv2" autoplay muted playsinline></video>':''}
+    ${MODE!=='screen'?'<div class="meter"><i id="lvl"></i></div>':''}
+    ${MODE==='voice'?'<div class="tr" id="trl"><span class="meta">The words you say appear here (if this browser can).</span></div>':''}
+    <div class="acts"><button class="btn" id="pause">❚❚ Pause</button><button class="btn primary" id="stop">■ Stop</button></div>`);
+  if(MODE==='camera'){ const v=$('#pv2'); if(v) v.srcObject=S.cam; }
+  $('#stop').onclick=()=>{ if(S.mr.state!=='inactive') S.mr.stop(); };
+  $('#pause').onclick=()=>{ if(S.mr.state==='recording'){ S.mr.pause(); S.pauseAt=Date.now(); $('#pause').textContent='▶ Resume'; } else if(S.mr.state==='paused'){ S.paused+=Date.now()-S.pauseAt; S.pauseAt=0; S.mr.resume(); $('#pause').textContent='❚❚ Pause'; } };
+  const title=document.title;
+  S.timer=setInterval(()=>{ const s=((S.pauseAt||Date.now())-S.t0-S.paused)/1000; const t=$('#t'), b=$('#b'); if(t) t.textContent=fmt(s); if(b) b.style.width=Math.min(100,100*s/MAX)+'%'; document.title='⏺ '+fmt(s)+' · '+title;
+    if(s>=MAX&&S.mr.state==='recording'){ S.mr.stop(); } },250);
+}
+
+/* 3. Watch or listen back, then hand it back */
+function finished(){
+  clearInterval(S.timer); document.title=NAMES[MODE]+' · Design Workbooks';
+  S.secs=Math.round(((S.pauseAt||Date.now())-S.t0-S.paused)/1000); stopStreams();
+  S.blob=new Blob(S.chunks,{type:S.type});
+  if(!S.blob.size){ show(`<div class="msg bad">Nothing was recorded.</div><div class="acts"><button class="btn" id="cancel">Close</button><button class="btn primary" id="again">Record again</button></div>`); $('#cancel').onclick=cancel; $('#again').onclick=start; return; }
+  const url=URL.createObjectURL(S.blob);
+  show(`<p><b>${MODE==='voice'?'Listen back':'Watch it back'}</b> <span class="meta">${fmt(S.secs)}</span></p>
+    ${MODE==='voice'?`<audio controls src="${url}"></audio>`:`<video controls playsinline src="${url}"></video>`}
+    ${MODE==='voice'?`<p class="meta" style="margin-top:10px">What you said (correct it if you like):</p><textarea id="tre" rows="3">${esc(S.tr)}</textarea>`:''}
+    ${CAN_SEND?'':'<div class="msg warn">This recorder was not opened from your workbook, so press Save the file and upload it in the workbook.</div>'}
+    <div class="acts"><button class="btn" id="again">Record again</button><button class="btn" id="save">Save the file</button>${CAN_SEND?'<button class="btn primary" id="use">Use this recording</button>':''}<button class="btn" id="cancel">Cancel</button></div><div id="sendmsg"></div>`);
+  $('#again').onclick=start; $('#cancel').onclick=cancel; $('#save').onclick=save;
+  const u=$('#use'); if(u) u.onclick=send; }
+function fileName(){ const ext=/mp4/.test(S.type)?(MODE==='voice'?'m4a':'mp4'):/ogg/.test(S.type)?'ogg':'webm'; return (MODE==='screen'?'screen recording':MODE==='camera'?'camera recording':'voice recording')+' '+new Date().toISOString().slice(0,16).replace('T',' ').replace(':','.')+'.'+ext; }
+function save(){ const a=document.createElement('a'); a.href=URL.createObjectURL(S.blob); a.download=fileName(); document.body.appendChild(a); a.click(); a.remove();
+  $('#sendmsg').innerHTML='<div class="msg ok">Saved to your computer (Downloads). In your workbook, choose Upload and pick this file.</div>'; }
+let ACKED=false;
+function send(){
+  const tr=$('#tre')?$('#tre').value.trim():S.tr;
+  try{ window.opener.postMessage({type:'dw-rec',id:ID,mode:MODE,blob:S.blob,mime:S.type,secs:S.secs,name:fileName(),tr},APP); }
+  catch(e){ $('#sendmsg').innerHTML='<div class="msg bad">It could not be sent to your workbook ('+esc(e.message)+'). Press Save the file, then upload it in the workbook.</div>'; return; }
+  $('#use').disabled=true; $('#sendmsg').innerHTML='<div class="msg">Sending to your workbook…</div>';
+  setTimeout(()=>{ if(ACKED) return; $('#use').disabled=false; $('#sendmsg').innerHTML='<div class="msg warn">Your workbook did not answer. Is its tab still open? Try again, or press Save the file and upload it in the workbook.</div>'; },5000); }
+window.addEventListener('message',e=>{ const d=e.data; if(!d||d.type!=='dw-rec-ok'||d.id!==ID||e.origin!==APP) return; ACKED=true;
+  show('<div class="msg ok"><b>Done.</b> The recording is in your workbook. This tab closes by itself; if it does not, close it and go back to your workbook.</div>'); setTimeout(()=>window.close(),900); });
+function cancel(){ stopStreams(); clearInterval(S&&S.timer); try{ if(CAN_SEND) window.opener.postMessage({type:'dw-rec-cancel',id:ID},APP); }catch(e){}
+  show('<p>Cancelled. You can close this tab.</p>'); setTimeout(()=>window.close(),600); }
+window.addEventListener('beforeunload',stopStreams);
+
+if(!navigator.mediaDevices||!window.MediaRecorder){ show('<div class="msg bad">This browser cannot record. Use Chrome, Edge or Safari (up to date).</div>'); return; }
+start();
+})();
+</script>
+</body>
+</html>

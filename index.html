@@ -20,6 +20,7 @@
 main{max-width:720px;margin:0 auto;padding:18px 16px 40px}
 h1{font-size:20px;margin:0 0 4px} .meta{color:var(--muted);font-size:14px} .card{background:var(--sheet);border:1px solid var(--line);border-radius:14px;padding:16px;margin-top:14px}
 .btn{font:inherit;font-size:15px;border:1px solid var(--line);background:var(--sheet);color:var(--ink);border-radius:9px;padding:9px 16px;cursor:pointer}
+a.btn{text-decoration:none;display:inline-block}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff} .btn.rec{background:var(--bad);border-color:var(--bad);color:#fff} .btn:disabled{opacity:.5;cursor:default}
 .acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px} label.chk{display:flex;gap:8px;align-items:center;margin-top:10px}
 .meter{height:10px;border-radius:6px;background:var(--line);overflow:hidden;margin-top:8px} .meter i{display:block;height:100%;width:0;background:var(--ok);transition:width .08s}
@@ -172,6 +173,12 @@ function cancel(){ stopStreams(); clearInterval(S&&S.timer); try{ if(CAN_SEND) w
 window.addEventListener('beforeunload',stopStreams);
 
 if(!navigator.mediaDevices||!window.MediaRecorder){ show('<div class="msg bad">This browser cannot record. Use Chrome, Edge or Safari (up to date).</div>'); return; }
+if(!Q.get('mode')){   // opened on its own (not from the app): choose what to record, to try it out
+  $('#h').textContent='Design Workbooks recorder'; document.title='Recorder · Design Workbooks';
+  $('#for').textContent='Opened on its own, so this is a try-out: you can watch or save what you record. In the app, recording opens this page for you.';
+  const u=m=>'?mode='+m+'&max='+(m==='voice'?180:120);
+  show(`<p><b>What do you want to try?</b></p><div class="acts" style="justify-content:flex-start;flex-wrap:wrap"><a class="btn primary" href="${u('voice')}">🎙 Record my voice</a><a class="btn primary" href="${u('screen')}">🖥 Record my screen</a><a class="btn primary" href="${u('camera')}">📷 Record with my camera</a></div><p class="meta"><a href="check.html">Check what this device can record</a></p>`);
+  return; }
 start();
 })();
 </script>

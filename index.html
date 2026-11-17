@@ -21,6 +21,7 @@ main{max-width:720px;margin:0 auto;padding:18px 16px 40px}
 h1{font-size:20px;margin:0 0 4px} .meta{color:var(--muted);font-size:14px} .card{background:var(--sheet);border:1px solid var(--line);border-radius:14px;padding:16px;margin-top:14px}
 .btn{font:inherit;font-size:15px;border:1px solid var(--line);background:var(--sheet);color:var(--ink);border-radius:9px;padding:9px 16px;cursor:pointer}
 a.btn{text-decoration:none;display:inline-block}
+.pick{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:4px 0 10px}.pick div{border:1px solid var(--line);border-radius:10px;padding:8px 10px;display:grid;gap:2px;background:var(--sheet)}.pick span{font-size:13px;color:var(--muted)}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff} .btn.rec{background:var(--bad);border-color:var(--bad);color:#fff} .btn:disabled{opacity:.5;cursor:default}
 .acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px} label.chk{display:flex;gap:8px;align-items:center;margin-top:10px}
 .meter{height:10px;border-radius:6px;background:var(--line);overflow:hidden;margin-top:8px} .meter i{display:block;height:100%;width:0;background:var(--ok);transition:width .08s}
@@ -72,12 +73,15 @@ function meter(stream){ try{ const ctx=new (window.AudioContext||window.webkitAu
 function start(){
   stopStreams(); S={streams:[],chunks:[]};
   const needMicChoice=MODE!=='voice';
-  show(`<p><b>${MODE==='screen'?'You will choose a tab, a window or your whole screen.':MODE==='camera'?'Your camera and microphone will be used.':'Your microphone will be used.'}</b></p>
-    ${MODE==='screen'?'<p class="meta">Tip: to record your workbook, choose its tab. To stop, come back to this tab and press Stop, or use the browser’s “Stop sharing”.</p>':''}
+  show(`${MODE==='screen'?`<p><b>Step 1.</b> Press <b>Choose what to record</b> below.</p>
+    <p><b>Step 2.</b> Your browser opens a box asking what to share. Pick one:</p>
+    <div class="pick"><div><b>🖥 Entire screen</b><span>everything you see</span></div><div><b>🪟 Window</b><span>one app window</span></div><div><b>🗂 Chrome tab</b><span>one tab, e.g. your workbook (tick “Share tab audio” for its sound)</span></div></div>
+    <p><b>Step 3.</b> Press <b>Share</b>. Recording starts after a 3-second countdown.</p>
+    <p class="meta">To stop, come back to this tab and press Stop, or press the browser’s “Stop sharing” bar. On a Mac, the first time, you may need to allow screen recording for your browser in System Settings › Privacy &amp; Security › Screen Recording.</p>`:`<p><b>${MODE==='camera'?'Your camera and microphone will be used.':'Your microphone will be used.'}</b></p>`}
     ${needMicChoice?`<label class="chk"><input type="checkbox" id="mic" ${Q.get('mic')==='0'?'':'checked'}> Use my microphone</label>`:''}
     <div id="micbox"><p class="meta" style="margin-top:10px">Microphone level (speak to test):</p><div class="meter"><i id="lvl"></i></div><p class="meta" id="micmsg"></p></div>
     ${MODE==='camera'?'<video id="pv" autoplay muted playsinline></video>':''}
-    <div class="acts"><button class="btn" id="cancel">Cancel</button><button class="btn rec" id="go">${MODE==='screen'?'Choose what to record':'Start recording'}</button></div>`);
+    <div class="acts"><button class="btn" id="cancel">Cancel</button><button class="btn rec" id="go">${MODE==='screen'?'Choose what to record…':'Start recording'}</button></div>`);
   $('#cancel').onclick=cancel;
   const mic=$('#mic'); if(mic) mic.onchange=prepare;
   $('#go').onclick=begin;

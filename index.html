@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Design Workbooks recorder</title>
-<meta name="dw-recorder-version" content="2026-11-25.0000">
+<meta name="dw-recorder-version" content="2026-11-25.2200">
 <!--
   DESIGN WORKBOOKS RECORDER
   Google's Apps Script page is not allowed to use the microphone or record the screen, so the app opens this
@@ -45,15 +45,17 @@ textarea{width:100%;font:inherit;font-size:15px;border:1px solid var(--line);bor
 <main>
   <h1 id="h">Recorder</h1>
   <p class="meta" id="for"></p>
+  <p id="cwarn" role="note" hidden style="background:#FFF6DC;border:1px solid #E8C27A;border-radius:10px;padding:8px 12px;font-size:14px">⚠ The recorder has only been tested in <b>Google Chrome</b>. Recording and timelapse may not work in this browser. Please open your workbook in Chrome and start the recording from there.</p>
+<script>(function(){ var u=navigator.userAgent||''; var chromium=/Chrome\x2f|CriOS\x2f|Edg\x2f|OPR\x2f/.test(u); if(!chromium){ var e=document.getElementById('cwarn'); if(e) e.hidden=false; } })();</script>
   <div id="app" class="card" aria-live="polite"></div>
   <p class="meta" style="margin-top:14px">Nothing is saved on this page: the recording goes straight back to your workbook, or to your computer if you press Save the file. <a href="check.html" target="_blank" rel="noopener">Check this device</a></p>
-  <p class="meta" id="recver" style="margin-top:10px;font-size:12px">Recorder version 2026-11-25.0000</p>
+  <p class="meta" id="recver" style="margin-top:10px;font-size:12px">Recorder version 2026-11-25.2200</p>
 </main>
 <script>
 (function(){
 'use strict';
 const Q=new URLSearchParams(location.search);
-const VER='2026-11-25.0000';
+const VER='2026-11-25.2200';
 const MODE=['screen','camera','voice','voiceover','timelapse'].includes(Q.get('mode'))?Q.get('mode'):'voice';
 const MAX=Math.max(10,Math.min(MODE==='timelapse'?4*3600:3600,+Q.get('max')||(MODE==='timelapse'?5400:180)));
 const ID=String(Q.get('id')||'').slice(0,40);
@@ -213,69 +215,130 @@ function voCtl(st){ const a=$('#voacts'), v=$('#vov'), mr=S.mr; $('#voch').inner
 
 /* 5. Timelapse (FR17). Pictures come straight from the shared window's video track (MediaStreamTrackProcessor),
    so they keep coming while the student works in another program and this tab is in the background. Fallback for
-   browsers without it: a <video> element and a timer in a worker. Each kept picture is a small JPEG in memory;
-   a picture where almost nothing changed is skipped, and if there are too many the oldest half is thinned out
-   (every other one) and the gap doubles, so memory stays small even after hours. */
-const TL={frames:[],every:Math.max(1,Math.min(10,+Q.get('every')||1)),gap:0,last:0,sig:null,t0:0,paused:0,pauseAt:0,on:false,skipped:0,sent:false,label:''};
-const TL_MAXF=1800, TL_W=1280;
-window.DW_TL={TL,changed:(a,b)=>tlChanged(a,b)};   /* for the tests */
+   browsers without it: a <video> element and a timer in a worker. A picture where almost nothing changed is skipped,
+   and if there are too many every other one is dropped and the gap doubles, so memory stays small even after hours.
+   25 Nov 2026 (recorder 2026-11-25.2200): BUG-23 small changes (an open menu, a dialog) are no longer skipped as "nothing changed" (160 × 90 copy, any part counts, a picture at least every 20 s); BUG-24 the floating recording window opens with the Choose the window click.
+   25 Nov 2026 (recorder 2026-11-25.1700): FR102 a "use Chrome" note at the top when the page is not opened in Chrome or another Chromium browser.
+   25 Nov 2026 (recorder 2026-11-25.1000): every kept picture is also saved in this browser (IndexedDB), so a timelapse
+   can carry on over several lessons ("Continue my timelapse"); it is removed once the workbook has the video. A small
+   floating window (Document Picture-in-Picture, Chrome/Edge) stays on top with Pause and Finish; every hour it asks
+   "Still recording?" and pauses if nobody answers within 2 minutes; the tab title shows 🔴 while recording. */
+const TL={frames:[],every:Math.max(1,Math.min(10,+Q.get('every')||1)),gap:0,last:0,sig:null,t0:0,paused:0,pauseAt:0,on:false,skipped:0,sent:false,label:'',prev:0,lastFrameAt:0,askAt:0,asking:0,pip:null};
+const TL_MAXF=1800, TL_W=1280, TL_ASK=3600, TL_ASKWAIT=120;
+window.DW_TL={TL,changed:(a,b)=>tlChanged(a,b),db:()=>tlDb(),ask:()=>tlAsk()};   /* for the tests */
 const tlApps=()=>String(Q.get('apps')||'').split(/[,;]/).map(x=>x.trim()).filter(Boolean);
-function tlStart(){ stopStreams(); S={streams:[],chunks:[]}; TL.frames=[]; TL.gap=TL.every*1000; TL.skipped=0; TL.sent=false;
-  const apps=tlApps();
-  show(`<p><b>Make a timelapse while you work.</b> This tab takes a picture of one window every ${TL.every} second${TL.every>1?'s':''} (up to ${fmt(MAX)}). When you stop, the pictures become a short video for your workbook.</p>
+/* --- pictures kept in this browser (IndexedDB "dw-timelapse": frames {k, b, w, h, at}; meta "cur") --- */
+let TLDB=null;
+function tlDb(){ if(TLDB) return TLDB; TLDB=new Promise((ok,no)=>{ try{ const r=indexedDB.open('dw-timelapse',1); r.onupgradeneeded=()=>{ const d=r.result; if(!d.objectStoreNames.contains('frames')) d.createObjectStore('frames',{keyPath:'k',autoIncrement:true}); if(!d.objectStoreNames.contains('meta')) d.createObjectStore('meta'); }; r.onsuccess=()=>ok(r.result); r.onerror=()=>no(r.error); }catch(e){ no(e); } }).catch(()=>null); return TLDB; }
+const tlReq=r=>new Promise((ok,no)=>{ r.onsuccess=()=>ok(r.result); r.onerror=()=>no(r.error); });
+async function tlStore(name,mode){ const d=await tlDb(); return d?d.transaction(name,mode||'readonly').objectStore(name):null; }
+async function tlMetaGet(){ try{ const st=await tlStore('meta'); return st?await tlReq(st.get('cur')):null; }catch(e){ return null; } }
+async function tlMetaPut(){ try{ const st=await tlStore('meta','readwrite'); if(st) await tlReq(st.put({label:TL.label,every:TL.every,gap:TL.gap,secs:tlSecs(),n:TL.frames.length,started:TL.started||Date.now(),at:Date.now(),apps:tlApps().join(', '),for:LABEL},'cur')); }catch(e){} }
+async function tlFramePut(f){ try{ const st=await tlStore('frames','readwrite'); if(st) f.k=await tlReq(st.add({b:f.b,w:f.w,h:f.h,at:f.at})); }catch(e){} }
+async function tlFramesDel(keys){ try{ const st=await tlStore('frames','readwrite'); if(st) keys.filter(k=>k!=null).forEach(k=>st.delete(k)); }catch(e){} }
+async function tlFramesAll(){ try{ const st=await tlStore('frames'); return st?(await tlReq(st.getAll())).sort((a,b)=>a.k-b.k):[]; }catch(e){ return []; } }
+async function tlDbClear(){ try{ const d=await tlDb(); if(!d) return; const t=d.transaction(['frames','meta'],'readwrite'); t.objectStore('frames').clear(); t.objectStore('meta').clear(); await new Promise(z=>{ t.oncomplete=z; t.onerror=z; }); }catch(e){} }
+const tlSecs=()=>Math.round(TL.prev+(TL.t0?((TL.pauseAt||Date.now())-TL.t0-TL.paused)/1000:0));
+const tlWin=l=>String(l||'').replace(/^(window|screen|web-contents-media-stream):/i,'');
+async function tlStart(){ stopStreams(); S={streams:[],chunks:[]}; TL.frames=[]; TL.gap=TL.every*1000; TL.skipped=0; TL.sent=false; TL.prev=0; TL.started=0; TL.forced=false;
+  const apps=tlApps(), m=await tlMetaGet();
+  const intro=`<p><b>Make a timelapse while you work.</b> This tab takes a picture of one window every ${TL.every} second${TL.every>1?'s':''} (up to ${fmt(MAX)} of work). When you finish, the pictures become a short video for your workbook.</p>
     <p><b>Step 1.</b> Open the program you will work in${apps.length?' ('+esc(apps.join(' or '))+')':''}.</p>
     <p><b>Step 2.</b> Press <b>Choose the window</b>, pick <b>🪟 Window</b> (or a <b>🗂 Chrome tab</b>), choose that program and press <b>Share</b>.</p>
-    <p><b>Step 3.</b> Work as normal. Leave this tab open. Come back here and press <b>Stop</b> at the end of the lesson.</p>
-    <p class="meta">Only that window is recorded, never your whole screen, and there is no sound. Nothing is saved until you press Use this timelapse. On a Mac, the first time, you may need to allow screen recording for your browser in System Settings › Privacy &amp; Security › Screen Recording.</p>
-    <div class="acts"><button class="btn" id="cancel">Cancel</button><button class="btn rec" id="go">Choose the window…</button></div>`);
+    <p><b>Step 3.</b> Work as normal. Leave this tab open. At the end of the lesson press <b>Pause</b> (to carry on next lesson) or <b>Finish</b>.</p>
+    <p class="meta">Only that window is recorded, never your whole screen, and there is no sound. The pictures stay on this computer until you press Use this recording. On a Mac, the first time, you may need to allow screen recording for your browser in System Settings › Privacy &amp; Security › Screen Recording.</p>`;
+  if(m&&m.n>0){ show(`<div class="msg"><b>You have a timelapse in progress</b>: ${m.n} pictures, ${fmt(m.secs||0)} of work${m.label?' in '+esc(tlWin(m.label)):''}, last on ${esc(new Date(m.at).toLocaleString([],{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}))}${m.for?' (for: '+esc(m.for)+')':''}.</div>${intro}
+      <div class="acts"><button class="btn" id="cancel">Cancel</button><button class="btn" id="fresh">Start a new one</button><button class="btn" id="finishold">Finish it now</button><button class="btn rec" id="go">Continue my timelapse…</button></div>`);
+    $('#cancel').onclick=cancel; $('#go').onclick=async()=>{ await tlLoad(m); tlBegin(); }; $('#finishold').onclick=async()=>{ await tlLoad(m); TL.on=true; tlStop(); };
+    $('#fresh').onclick=async()=>{ if(!confirm('Throw away the timelapse in progress and start a new one?')) return; await tlDbClear(); tlStart(); }; return; }
+  show(intro+`<div class="acts"><button class="btn" id="cancel">Cancel</button><button class="btn rec" id="go">Choose the window…</button></div>`);
   $('#cancel').onclick=cancel; $('#go').onclick=tlBegin; }
+async function tlLoad(m){ const L=await tlFramesAll(); TL.frames=L.map(f=>({b:f.b,w:f.w,h:f.h,at:f.at,k:f.k})); TL.prev=m.secs||0; TL.gap=Math.max(TL.every*1000,m.gap||0); TL.started=m.started||Date.now(); TL.label=m.label||''; }
 async function tlBegin(){
   let disp;
+  /* BUG-24 (recorder 2026-11-25.2200): open the floating "recording" window with this click (Chrome only allows it after a
+     click), before choosing the window. If the browser then wants another click to share, Try again does it. */
+  if(window.documentPictureInPicture&&!(TL.pip&&!TL.pip.closed)){ try{ await tlPip(); }catch(e){} }
   try{ if(!navigator.mediaDevices||!navigator.mediaDevices.getDisplayMedia) throw Object.assign(new Error('This browser cannot record a window. Use Chrome or Edge on a laptop or Chromebook.'),{name:'NoScreen'});
     disp=await navigator.mediaDevices.getDisplayMedia({video:{displaySurface:'window',frameRate:{ideal:5,max:10},width:{max:1920},height:{max:1200}},audio:false,selfBrowserSurface:'exclude',surfaceSwitching:'include',monitorTypeSurfaces:'exclude'}); }
   catch(e){ if(e&&e.name==='NotAllowedError'&&!/policy/i.test(e.message||'')) show(`<div class="msg warn">Nothing was chosen, so the timelapse has not started.</div><div class="acts"><button class="btn" id="cancel">Cancel</button><button class="btn primary" id="again">Try again</button></div>`);
     else show(`<div class="msg bad">${esc(e&&e.message||'Recording is not possible here.')}</div><p class="meta">On a school Chromebook, screen recording may be switched off by the school.</p><div class="acts"><button class="btn" id="cancel">Close</button><button class="btn primary" id="again">Try again</button></div>`);
-    $('#cancel').onclick=cancel; $('#again').onclick=tlStart; return; }
+    $('#cancel').onclick=cancel; $('#again').onclick=tlBegin; return; }
   const track=disp.getVideoTracks()[0], set=(track.getSettings&&track.getSettings())||{};
   if(set.displaySurface==='monitor'){ disp.getTracks().forEach(t=>t.stop()); show(`<div class="msg warn"><b>That was your whole screen.</b> For privacy the timelapse only records one window or tab. Press Choose again and pick 🪟 Window.</div><div class="acts"><button class="btn" id="cancel">Cancel</button><button class="btn primary" id="again">Choose again</button></div>`); $('#cancel').onclick=cancel; $('#again').onclick=tlBegin; return; }
-  TL.label=String(track.label||''); const apps=tlApps();
-  if(apps.length&&TL.label&&!apps.some(a=>TL.label.toLowerCase().includes(a.toLowerCase()))&&!TL.forced){
-    show(`<div class="msg warn">You chose “${esc(TL.label.replace(/^(window|screen|web-contents-media-stream):/i,''))}”. Your teacher asked for ${esc(apps.join(' or '))}.</div><div class="acts"><button class="btn" id="cancel">Cancel</button><button class="btn" id="anyway">Record this window anyway</button><button class="btn primary" id="again">Choose again</button></div>`);
-    $('#cancel').onclick=()=>{ disp.getTracks().forEach(t=>t.stop()); cancel(); }; $('#again').onclick=()=>{ disp.getTracks().forEach(t=>t.stop()); tlBegin(); }; $('#anyway').onclick=()=>{ TL.forced=true; tlRun(disp); }; return; }
-  tlRun(disp); }
-const tlCanvas=document.createElement('canvas'), tlSmall=document.createElement('canvas'); tlSmall.width=32; tlSmall.height=18;
-function tlSig(src,w,h){ const g=tlSmall.getContext('2d',{willReadFrequently:true}); g.drawImage(src,0,0,w,h,0,0,32,18); return g.getImageData(0,0,32,18).data; }
-function tlChanged(a,b){ if(!a||!b) return true; let d=0; for(let i=0;i<a.length;i+=4) d+=Math.abs(a[i]-b[i])+Math.abs(a[i+1]-b[i+1])+Math.abs(a[i+2]-b[i+2]); return d/(a.length/4)>6; }
-async function tlKeep(src,w,h){ if(!w||!h) return; const now=Date.now(); if(TL.pauseAt||now-TL.last<TL.gap) return; TL.last=now;
-  const sig=tlSig(src,w,h); if(!tlChanged(sig,TL.sig)&&now-(TL.lastKept||0)<60000){ TL.skipped++; return; } TL.sig=sig; TL.lastKept=now;
+  const lab=String(track.label||''), apps=tlApps();
+  if(apps.length&&lab&&!apps.some(a=>lab.toLowerCase().includes(a.toLowerCase()))&&!TL.forced){
+    show(`<div class="msg warn">You chose “${esc(tlWin(lab))}”. Your teacher asked for ${esc(apps.join(' or '))}.</div><div class="acts"><button class="btn" id="cancel">Cancel</button><button class="btn" id="anyway">Record this window anyway</button><button class="btn primary" id="again">Choose again</button></div>`);
+    $('#cancel').onclick=()=>{ disp.getTracks().forEach(t=>t.stop()); cancel(); }; $('#again').onclick=()=>{ disp.getTracks().forEach(t=>t.stop()); tlBegin(); }; $('#anyway').onclick=()=>{ TL.forced=true; TL.label=lab; tlRun(disp); }; return; }
+  TL.label=lab; tlRun(disp); }
+/* BUG-23 (recorder 2026-11-25.2200): compare a 160 × 90 copy and keep the picture when ANY part changes (a menu, a dialog,
+   a few lines of text), not only when the average change of the whole picture is big. Video noise stays below the thresholds. */
+const TL_SW=160, TL_SH=90, TL_KEEP=20000;
+const tlCanvas=document.createElement('canvas'), tlSmall=document.createElement('canvas'); tlSmall.width=TL_SW; tlSmall.height=TL_SH;
+function tlSig(src,w,h){ const g=tlSmall.getContext('2d',{willReadFrequently:true}); g.drawImage(src,0,0,w,h,0,0,TL_SW,TL_SH); return g.getImageData(0,0,TL_SW,TL_SH).data; }
+function tlChanged(a,b){ if(!a||!b||a.length!==b.length) return true; const n=a.length/4, W=n===TL_SW*TL_SH?TL_SW:Math.max(1,Math.round(Math.sqrt(n*16/9))), H=Math.ceil(n/W), BS=8, bw=Math.ceil(W/BS), blk=new Float32Array(bw*Math.ceil(H/BS)); let px=0;
+  for(let p=0;p<n;p++){ const i=p*4, x=p%W, y=(p/W)|0, d=Math.abs(a[i]-b[i])+Math.abs(a[i+1]-b[i+1])+Math.abs(a[i+2]-b[i+2]); if(d>60) px++; blk[((y/BS)|0)*bw+((x/BS)|0)]+=d; }
+  if(px>=10) return true;   /* at least 10 of the 14,400 small pixels changed clearly (a menu or dialog is far more) */
+  for(let k=0;k<blk.length;k++) if(blk[k]/(BS*BS)>18) return true;   /* or one 8 × 8 area changed on average */
+  return false; }
+async function tlKeep(src,w,h){ if(!w||!h) return; const now=Date.now(); TL.lastFrameAt=now; if(TL.pauseAt||now-TL.last<TL.gap) return; TL.last=now;
+  const sig=tlSig(src,w,h); if(!tlChanged(sig,TL.sig)&&now-(TL.lastKept||0)<TL_KEEP){ TL.skipped++; return; } TL.sig=sig; TL.lastKept=now;
   const sc=Math.min(1,TL_W/w), cw=Math.round(w*sc/2)*2, ch=Math.round(h*sc/2)*2; tlCanvas.width=cw; tlCanvas.height=ch; tlCanvas.getContext('2d').drawImage(src,0,0,cw,ch);
   const blob=await new Promise(z=>tlCanvas.toBlob(z,'image/jpeg',0.62)); if(!blob) return;
-  TL.frames.push({b:blob,w:cw,h:ch,at:now}); if(!TL.thumbUrl||TL.frames.length%5===1){ if(TL.thumbUrl) URL.revokeObjectURL(TL.thumbUrl); TL.thumbUrl=URL.createObjectURL(blob); const im=$('#tlthumb'); if(im) im.src=TL.thumbUrl; }
-  if(TL.frames.length>=TL_MAXF){ TL.frames=TL.frames.filter((f,i)=>i%2===0); TL.gap*=2; } }
+  const f={b:blob,w:cw,h:ch,at:now}; TL.frames.push(f); tlFramePut(f);
+  if(!TL.thumbUrl||TL.frames.length%5===1){ if(TL.thumbUrl) URL.revokeObjectURL(TL.thumbUrl); TL.thumbUrl=URL.createObjectURL(blob); [$('#tlthumb'),TL.pip&&TL.pip.document.getElementById('pthumb')].forEach(im=>{ if(im) im.src=TL.thumbUrl; }); }
+  if(TL.frames.length>=TL_MAXF){ const drop=TL.frames.filter((f,i)=>i%2===1); TL.frames=TL.frames.filter((f,i)=>i%2===0); TL.gap*=2; tlFramesDel(drop.map(f=>f.k)); tlMetaPut(); } }
+function tlPause(on){ if(on&&!TL.pauseAt){ TL.pauseAt=Date.now(); } else if(!on&&TL.pauseAt){ TL.paused+=Date.now()-TL.pauseAt; TL.pauseAt=0; TL.askAt=tlSecs()+TL_ASK; }
+  const t=TL.pauseAt?'▶ Carry on':'❚❚ Pause'; [$('#pause'),TL.pip&&TL.pip.document.getElementById('ppause')].forEach(b=>{ if(b) b.textContent=t; }); tlMetaPut(); }
+/* every hour of recording: "Still recording?" here and in the floating window; no answer in 2 minutes pauses it */
+function tlAsk(){ if(TL.asking) return; TL.asking=Date.now(); const html=`<b>Still recording?</b> <button class="btn primary" data-tlyes>Yes, carry on</button>`;
+  const a=$('#tlask'); if(a){ a.hidden=false; a.innerHTML=html; }
+  const pd=TL.pip&&TL.pip.document, pa=pd&&pd.getElementById('pask'); if(pa){ pa.hidden=false; pa.innerHTML=html; }
+  [a,pa].forEach(x=>{ const b=x&&x.querySelector('[data-tlyes]'); if(b) b.onclick=tlAnswered; }); }
+function tlAnswered(){ TL.asking=0; TL.askAt=tlSecs()+TL_ASK; [$('#tlask'),TL.pip&&TL.pip.document.getElementById('pask')].forEach(x=>{ if(x){ x.hidden=true; x.innerHTML=''; } }); }
+function tlNoAnswer(){ TL.asking=0; tlPause(true); const m='<span>No answer, so it is paused. Press Carry on when you are back.</span>';
+  [$('#tlask'),TL.pip&&TL.pip.document.getElementById('pask')].forEach(x=>{ if(x){ x.hidden=false; x.innerHTML=m; } }); }
+/* the floating window (Chrome / Edge 116+): latest picture, time, Pause / Finish */
+async function tlPip(){ if(!window.documentPictureInPicture) return; try{ if(TL.pip&&!TL.pip.closed){ TL.pip.focus(); return; }
+  const w=await documentPictureInPicture.requestWindow({width:300,height:250}); TL.pip=w; const d=w.document;
+  d.body.innerHTML=`<style>body{margin:0;font:14px system-ui,sans-serif;background:#15212B;color:#fff;display:grid;gap:6px;padding:8px}img{width:100%;height:120px;object-fit:contain;background:#000;border-radius:6px}.r{display:flex;gap:6px;align-items:center;flex-wrap:wrap}button{font:inherit;border:0;border-radius:6px;padding:6px 10px;cursor:pointer}.p{background:#2459A8;color:#fff}#pask{background:#FBEAD0;color:#15212B;border-radius:6px;padding:6px}</style>
+    <img id="pthumb" alt=""><div class="r"><b id="ptime">🔴 0:00</b><span id="pn"></span></div><div id="pask" hidden></div><div class="r"><button id="ppause">${TL.pauseAt?'▶ Carry on':'❚❚ Pause'}</button><button class="p" id="pfin">■ Finish</button></div>`;
+  if(TL.thumbUrl) d.getElementById('pthumb').src=TL.thumbUrl;
+  d.getElementById('ppause').onclick=()=>tlPause(!TL.pauseAt); d.getElementById('pfin').onclick=()=>{ try{ w.close(); }catch(e){} window.focus(); tlStop(); };
+  w.addEventListener('pagehide',()=>{ TL.pip=null; }); }catch(e){ const n=$('#tln'); if(n) n.textContent='The floating window could not open: '+(e.message||e); } }
 function tlRun(disp){ S.disp=disp; S.streams.push(disp); const track=disp.getVideoTracks()[0];
-  TL.t0=Date.now(); TL.paused=0; TL.pauseAt=0; TL.last=0; TL.sig=null; TL.on=true;
-  track.addEventListener('ended',()=>{ if(TL.on) tlStop(); });
+  TL.t0=Date.now(); TL.paused=0; TL.pauseAt=0; TL.last=0; TL.sig=null; TL.on=true; TL.lastFrameAt=Date.now(); TL.started=TL.started||Date.now(); TL.askAt=TL.prev+TL_ASK; TL.asking=0; tlMetaPut();
+  track.addEventListener('ended',()=>{ if(TL.on){ tlPause(true); tlStopStreams(); tlShowEnded(); } });
   if(window.MediaStreamTrackProcessor){ try{ const rd=new MediaStreamTrackProcessor({track}).readable.getReader(); S.tlReader=rd;
       (async()=>{ while(TL.on){ const {value:f,done}=await rd.read(); if(done||!f) break; try{ await tlKeep(f,f.displayWidth,f.displayHeight); }catch(e){} f.close(); } })(); }
     catch(e){ tlFallback(disp); } }
   else tlFallback(disp);
   show(`<p class="big"><span class="dot" aria-hidden="true"></span><span id="t">0:00</span> <span class="meta">of ${fmt(MAX)}</span></p><div class="bar"><i id="b"></i></div>
-    <p class="meta" id="tln">Taking a picture every ${TL.every} s${TL.label?' of '+esc(TL.label.replace(/^(window|screen|web-contents-media-stream):/i,'')):''}.</p>
+    <p class="meta" id="tln">Taking a picture every ${TL.every} s${TL.label?' of '+esc(tlWin(TL.label)):''}.</p>
+    ${window.documentPictureInPicture?'':'<p class="meta">This browser can’t show a small floating window. While it records, this tab’s title shows 🔴 and the time, and the browser shows that it is sharing a window.</p>'}
+    <div class="msg warn" id="tlask" hidden></div>
     <img id="tlthumb" alt="The latest picture" style="width:100%;max-height:40vh;object-fit:contain;border-radius:10px;border:1px solid var(--line);margin-top:8px;background:var(--bg)">
-    <p class="meta">You can go back to your program now. Leave this tab open.</p>
-    <div class="acts"><button class="btn" id="pause">❚❚ Pause</button><button class="btn primary" id="stop">■ Stop and make the video</button><button class="btn" id="cancel">Cancel</button></div>`);
-  $('#stop').onclick=tlStop; $('#cancel').onclick=async()=>{ if(TL.frames.length>10&&!confirm('Throw away this timelapse?')) return; TL.on=false; TL.frames=[]; cancel(); };
-  $('#pause').onclick=()=>{ if(!TL.pauseAt){ TL.pauseAt=Date.now(); $('#pause').textContent='▶ Carry on'; } else { TL.paused+=Date.now()-TL.pauseAt; TL.pauseAt=0; $('#pause').textContent='❚❚ Pause'; } };
-  const title=document.title;
-  S.timer=setInterval(()=>{ const s=((TL.pauseAt||Date.now())-TL.t0-TL.paused)/1000, t=$('#t'), b=$('#b'), n=$('#tln');
-    if(t) t.textContent=fmt(s); if(b) b.style.width=Math.min(100,100*s/MAX)+'%'; if(n) n.textContent=`${TL.frames.length} pictures${TL.pauseAt?' · paused':''}${TL.skipped?' · '+TL.skipped+' skipped (nothing changed)':''}`;
-    document.title=(TL.pauseAt?'❚❚ ':'⏱ ')+fmt(s)+' · '+title; if(s>=MAX&&TL.on) tlStop(); },1000); }
+    <p class="meta">You can go back to your program now. Leave this tab open. At the end of the lesson press <b>Pause</b> and close this tab to carry on next lesson (the pictures stay on this computer), or <b>Finish</b> to make the video now.</p>
+    <div class="acts"><button class="btn" id="pause">❚❚ Pause</button>${window.documentPictureInPicture?'<button class="btn" id="pip">⧉ Floating window</button>':''}<button class="btn primary" id="stop">■ Finish and make the video</button><button class="btn" id="cancel">Throw away</button></div>`);
+  if(TL.thumbUrl) $('#tlthumb').src=TL.thumbUrl; else if(TL.frames.length){ TL.thumbUrl=URL.createObjectURL(TL.frames[TL.frames.length-1].b); $('#tlthumb').src=TL.thumbUrl; }
+  $('#stop').onclick=tlStop; $('#cancel').onclick=async()=>{ if(TL.frames.length>10&&!confirm('Throw away this timelapse? The pictures are deleted.')) return; TL.on=false; TL.frames=[]; await tlDbClear(); try{ TL.pip&&TL.pip.close(); }catch(e){} cancel(); };
+  $('#pause').onclick=()=>tlPause(!TL.pauseAt); const pb=$('#pip'); if(pb) pb.onclick=tlPip;
+  const title=NAMES[MODE]+' · Design Workbooks';
+  S.timer=setInterval(()=>{ const s=tlSecs(), t=$('#t'), b=$('#b'), n=$('#tln'), hidden=!TL.pauseAt&&Date.now()-TL.lastFrameAt>30000;
+    if(t) t.textContent=fmt(s); if(b) b.style.width=Math.min(100,100*s/MAX)+'%';
+    const st=`${TL.frames.length} pictures${TL.pauseAt?' · paused':''}${hidden?' · no new picture for '+Math.round((Date.now()-TL.lastFrameAt)/1000)+' s: is the window minimised?':''}${TL.skipped?' · '+TL.skipped+' skipped (nothing changed)':''}`;
+    if(n) n.textContent=st; document.title=(TL.pauseAt?'❚❚ ':'🔴 ')+fmt(s)+' · '+title;
+    const pd=TL.pip&&!TL.pip.closed&&TL.pip.document; if(pd){ const pt=pd.getElementById('ptime'), pn=pd.getElementById('pn'); if(pt) pt.textContent=(TL.pauseAt?'❚❚ ':'🔴 ')+fmt(s); if(pn) pn.textContent=TL.frames.length+' pictures'; }
+    if(!TL.pauseAt&&!TL.asking&&s>=TL.askAt) tlAsk(); if(TL.asking&&Date.now()-TL.asking>TL_ASKWAIT*1000) tlNoAnswer();
+    if(s%10===0) tlMetaPut(); if(s>=MAX&&TL.on) tlStop(); },1000); }
+function tlShowEnded(){ const a=$('#tlask'); if(a){ a.hidden=false; a.innerHTML='<span>Sharing stopped. Press <b>Finish</b> to make the video, or close this tab and carry on next lesson.</span>'; } const p=$('#pause'); if(p) p.disabled=true; }
+function tlStopStreams(){ clearInterval(S.tlInt); if(S.tlWorker){ S.tlWorker.terminate(); S.tlWorker=null; } try{ S.tlReader&&S.tlReader.cancel(); }catch(e){} (S.streams||[]).forEach(st=>st&&st.getTracks().forEach(t=>t.stop())); }
 function tlFallback(disp){ const v=document.createElement('video'); v.muted=true; v.playsInline=true; v.srcObject=disp; v.play().catch(()=>{}); S.tlVideo=v;
   const src='let t;onmessage=e=>{clearInterval(t);if(e.data>0)t=setInterval(()=>postMessage(1),e.data)}';
   try{ const wk=new Worker(URL.createObjectURL(new Blob([src],{type:'text/javascript'}))); S.tlWorker=wk; wk.onmessage=()=>{ if(TL.on&&v.videoWidth) tlKeep(v,v.videoWidth,v.videoHeight); }; wk.postMessage(500); }
   catch(e){ S.tlInt=setInterval(()=>{ if(TL.on&&v.videoWidth) tlKeep(v,v.videoWidth,v.videoHeight); },500); } }
-async function tlStop(){ if(!TL.on) return; TL.on=false; clearInterval(S.timer); clearInterval(S.tlInt); if(S.tlWorker){ S.tlWorker.terminate(); S.tlWorker=null; } try{ S.tlReader&&S.tlReader.cancel(); }catch(e){}
-  const secsWorked=Math.round(((TL.pauseAt||Date.now())-TL.t0-TL.paused)/1000); stopStreams(); document.title=NAMES[MODE]+' · Design Workbooks';
+async function tlStop(){ if(!TL.on) return; const secsWorked=tlSecs(); TL.on=false; clearInterval(S.timer); tlStopStreams(); try{ TL.pip&&TL.pip.close(); }catch(e){} TL.pip=null;
+  await tlMetaPut(); stopStreams(); document.title=NAMES[MODE]+' · Design Workbooks';
   if(TL.frames.length<2){ show(`<div class="msg bad">There were not enough pictures to make a video (${TL.frames.length}).</div><div class="acts"><button class="btn" id="cancel">Close</button><button class="btn primary" id="again">Start again</button></div>`); $('#cancel').onclick=cancel; $('#again').onclick=tlStart; return; }
   await tlEncode(secsWorked); }
 /* plays the pictures into a canvas that MediaRecorder records: about a minute of video (10 to 30 pictures a second) */
@@ -294,7 +357,8 @@ async function tlEncode(secsWorked){ const F=TL.frames, fps=Math.max(10,Math.min
     next+=step; await wait(Math.max(0,next-performance.now())); }
   await wait(step*2); mr.stop(); await ended;
   S={streams:[],chunks,type:(mr.mimeType||type||'video/webm').split(';')[0]}; S.fixedSecs=Math.max(1,Math.round(F.length/fps)); S.t0=Date.now(); S.paused=0;
-  TL.frames=[]; finished(); }
+  finished();
+  const n=document.createElement('p'); n.className='meta'; n.textContent='The pictures stay on this computer until your workbook has the video, so you can also go back and add more (Record again, then Continue my timelapse).'; const a=$('#app'); if(a) a.appendChild(n); }
 function fileName(){ const ext=/mp4/.test(S.type)?(MODE==='voice'?'m4a':'mp4'):/ogg/.test(S.type)?'ogg':'webm'; return (MODE==='screen'?'screen recording':MODE==='camera'?'camera recording':MODE==='voiceover'?'video with voice-over':MODE==='timelapse'?'timelapse':'voice recording')+' '+new Date().toISOString().slice(0,16).replace('T',' ').replace(':','.')+'.'+ext; }
 function save(){ const a=document.createElement('a'); a.href=URL.createObjectURL(S.blob); a.download=fileName(); document.body.appendChild(a); a.click(); a.remove();
   $('#sendmsg').innerHTML='<div class="msg ok">Saved to your computer (Downloads). In your workbook, choose Upload and pick this file.</div>'; }
@@ -305,11 +369,11 @@ function send(){ TL.sent=true;
   catch(e){ $('#sendmsg').innerHTML='<div class="msg bad">It could not be sent to your workbook ('+esc(e.message)+'). Press Save the file, then upload it in the workbook.</div>'; return; }
   $('#use').disabled=true; $('#sendmsg').innerHTML='<div class="msg">Sending to your workbook…</div>';
   setTimeout(()=>{ if(ACKED) return; $('#use').disabled=false; $('#sendmsg').innerHTML='<div class="msg warn">Your workbook did not answer. Is its tab still open? Try again, or press Save the file and upload it in the workbook.</div>'; },5000); }
-window.addEventListener('message',e=>{ const d=e.data; if(!d||d.type!=='dw-rec-ok'||d.id!==ID||e.origin!==APP) return; ACKED=true;
+window.addEventListener('message',e=>{ const d=e.data; if(!d||d.type!=='dw-rec-ok'||d.id!==ID||e.origin!==APP) return; ACKED=true; if(MODE==='timelapse'){ TL.frames=[]; tlDbClear(); }
   show('<div class="msg ok"><b>Done.</b> The recording is in your workbook. This tab closes by itself; if it does not, close it and go back to your workbook.</div>'); setTimeout(()=>window.close(),900); });
 function cancel(){ stopStreams(); clearInterval(S&&S.timer); try{ if(CAN_SEND) window.opener.postMessage({type:'dw-rec-cancel',id:ID},APP); }catch(e){}
   show('<p>Cancelled. You can close this tab.</p>'); setTimeout(()=>window.close(),600); }
-window.addEventListener('beforeunload',e=>{ if(MODE==='timelapse'&&TL.frames.length&&!TL.sent){ e.preventDefault(); e.returnValue=''; } stopStreams(); });
+window.addEventListener('beforeunload',e=>{ if(MODE==='timelapse'&&TL.on){ tlMetaPut(); } stopStreams(); });   /* the pictures are kept in this browser, so closing the tab loses nothing */
 
 if(!navigator.mediaDevices||!window.MediaRecorder){ show('<div class="msg bad">This browser cannot record. Use Chrome, Edge or Safari (up to date).</div>'); return; }
 if(MODE==='voiceover'){ $('#for').textContent='Talk over your video. It comes back to your workbook when you press Use this recording.'; voInit(); return; }

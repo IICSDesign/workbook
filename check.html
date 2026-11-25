@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Check this device · Design Workbooks</title>
-<meta name="dw-recorder-version" content="2026-11-25.0000">
+<meta name="dw-recorder-version" content="2026-11-25.2200">
 <!-- DESIGN WORKBOOKS: CHECK THIS DEVICE. Can this browser record the screen, use the camera and the microphone,
      and make a video file? Nothing is recorded or sent; the result can be copied into "Report a problem". -->
 <style>
@@ -26,7 +26,7 @@ pre{white-space:pre-wrap;background:var(--sheet);border:1px solid var(--line);bo
   <div class="card" id="rows"></div>
   <p><button class="btn primary" id="copy">Copy the result</button> <span class="meta">then paste it into ⚑ Report a problem in your workbook, or send it to your teacher.</span></p>
   <pre id="out"></pre>
-  <p class="meta" id="recver" style="margin-top:10px;font-size:12px">Recorder version 2026-11-25.0000</p>
+  <p class="meta" id="recver" style="margin-top:10px;font-size:12px">Recorder version 2026-11-25.2200</p>
 </main>
 <script>
 (function(){
@@ -44,7 +44,7 @@ const ROWS=[
 ];
 function draw(){ $('#rows').innerHTML=ROWS.map(([k,l,t])=>{ const r=R[k]||{s:'',t:t?'Not tested yet':''};
   return `<div class="row ${r.s}"><span class="ic" aria-hidden="true">${r.s==='ok'?'✓':r.s==='bad'?'✗':r.s==='warn'?'!':'…'}</span><div><b>${esc(l)}</b><div class="meta">${esc(r.t)}</div></div>${t?`<button class="btn" data-t="${k}">Test</button>`:'<span></span>'}</div>`; }).join('');
-  $('#out').textContent=['Design Workbooks device check (recorder 2026-11-25.0000) '+new Date().toLocaleString(),navigator.userAgent].concat(ROWS.map(([k,l])=>l+': '+((R[k]&&{ok:'yes',bad:'NO',warn:'partly'}[R[k].s])||'not tested')+(R[k]&&R[k].t?' ('+R[k].t+')':''))).join('\n'); }
+  $('#out').textContent=['Design Workbooks device check (recorder 2026-11-25.2200) '+new Date().toLocaleString(),navigator.userAgent].concat(ROWS.map(([k,l])=>l+': '+((R[k]&&{ok:'yes',bad:'NO',warn:'partly'}[R[k].s])||'not tested')+(R[k]&&R[k].t?' ('+R[k].t+')':''))).join('\n'); }
 const ua=navigator.userAgent, cros=/CrOS/.test(ua);
 const br=/Edg\//.test(ua)?'Edge':/Chrome\//.test(ua)?'Chrome':/Firefox\//.test(ua)?'Firefox':/Safari\//.test(ua)?'Safari':'Another browser';
 R.browser={s:/Chrome|Edge/.test(br)?'ok':'warn',t:br+(cros?' on a Chromebook':/Mac OS X/.test(ua)?' on a Mac':/Windows/.test(ua)?' on Windows':/Android/.test(ua)?' on Android':/iPhone|iPad/.test(ua)?' on iPhone/iPad':'')+(/Chrome|Edge/.test(br)?'':': Chrome or Edge works best')};
